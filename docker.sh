@@ -17,3 +17,12 @@ sudo groupadd docker
 sudo usermod -aG docker $USER
 sudo systemctl enable docker.service
 sudo systemctl enable containerd.service
+
+
+alias restart='sudo systemctl restart'
+alias stop='sudo systemctl stop'
+alias disable='sudo systemctl disable'
+alias dl='docker logs -fn 2000'
+alias dc='docker compose'
+alias upb='source ~/.bashrc'
+upb
