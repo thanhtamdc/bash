@@ -1,3 +1,4 @@
+sudo sed -i '54i ubuntu ALL=(ALL) NOPASSWD:ALL' /etc/sudoers
 sudo apt-get install \
     ca-certificates \
     curl \
@@ -19,10 +20,11 @@ sudo systemctl enable docker.service
 sudo systemctl enable containerd.service
 
 
-alias restart='sudo systemctl restart'
-alias stop='sudo systemctl stop'
-alias disable='sudo systemctl disable'
-alias dl='docker logs -fn 2000'
-alias dc='docker compose'
-alias upb='source ~/.bashrc'
-upb
+echo "alias restart='sudo systemctl restart'" > ~/.bash_profile
+echo "alias stop='sudo systemctl stop'" >> ~/.bash_profile
+echo "alias disable='sudo systemctl disable'" >> ~/.bash_profile
+echo "alias dl='docker logs -fn 2000'" >> ~/.bash_profile
+echo "alias dc='docker compose'" >> ~/.bash_profile
+echo "alias upb='source ~/.bashrc'" >> ~/.bash_profile
+echo "upb" >> ~/.bash_profile
+. ~/.bash_profile
