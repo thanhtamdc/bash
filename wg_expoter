@@ -1,0 +1,266 @@
+#!/bin/bash
+
+set -e
+
+INSTALL_DIR="/opt/wg-exporter"
+SERVICE_NAME="wg-exporter"
+EXPORTER_PORT="8787"
+
+echo "[1/8] Installing dependencies..."
+
+apt update
+apt install -y python3 python3-pip wireguard-tools
+
+pip3 install prometheus_client
+
+echo "[2/8] Creating install directory..."
+
+mkdir -p ${INSTALL_DIR}
+
+echo "[3/8] Creating exporter script..."
+
+cat > ${INSTALL_DIR}/wg_exporter.py << 'EOF'
+#!/usr/bin/env python3
+
+import time
+import subprocess
+
+from prometheus_client import start_http_server
+from prometheus_client.core import (
+    GaugeMetricFamily,
+    REGISTRY,
+)
+
+PORT = 9586
+
+
+class WireGuardCollector:
+
+    def collect(self):
+
+        interface_rx_metric = GaugeMetricFamily(
+            'wireguard_interface_received_bytes_total',
+            'Bytes received througth the interface.',
+            labels=['interface']
+        )
+
+        interface_tx_metric = GaugeMetricFamily(
+            'wireguard_interface_sent_bytes_total',
+            'Bytes sent through the interface.',
+            labels=['interface']
+        )
+
+        peer_handshake_metric = GaugeMetricFamily(
+            'wireguard_peer_last_handshake_seconds',
+            'Seconds from the last handshake with the peer.',
+            labels=['addresses', 'id', 'interface', 'name', 'user']
+        )
+
+        peer_rx_metric = GaugeMetricFamily(
+            'wireguard_peer_received_bytes_total',
+            'Bytes received from the peer.',
+            labels=['addresses', 'id', 'interface', 'name', 'user']
+        )
+
+        peer_tx_metric = GaugeMetricFamily(
+            'wireguard_peer_sent_bytes_total',
+            'Bytes sent to the peer.',
+            labels=['addresses', 'id', 'interface', 'name', 'user']
+        )
+
+        peer_up_metric = GaugeMetricFamily(
+            'wireguard_peer_up',
+            'Peer connection state (boolean: 1/0).',
+            labels=['addresses', 'id', 'interface', 'name', 'user']
+        )
+
+        try:
+
+            result = subprocess.run(
+                ['wg', 'show', 'all', 'dump'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            lines = result.stdout.strip().splitlines()
+
+            for line in lines:
+
+                parts = line.split('\t')
+
+                # Interface line
+                if len(parts) == 5:
+
+                    interface = parts[0]
+
+                    try:
+                        with open(f'/sys/class/net/{interface}/statistics/rx_bytes') as f:
+                            rx = int(f.read().strip())
+
+                        with open(f'/sys/class/net/{interface}/statistics/tx_bytes') as f:
+                            tx = int(f.read().strip())
+
+                    except Exception:
+                        rx = 0
+                        tx = 0
+
+                    interface_rx_metric.add_metric(
+                        [interface],
+                        rx
+                    )
+
+                    interface_tx_metric.add_metric(
+                        [interface],
+                        tx
+                    )
+
+                # Peer line
+                elif len(parts) == 9:
+
+                    interface = parts[0]
+                    peer_id = parts[1]
+                    addresses = parts[4]
+
+                    latest_handshake = int(parts[5])
+                    transfer_rx = int(parts[6])
+                    transfer_tx = int(parts[7])
+
+                    name = peer_id
+                    user = ""
+
+                    labels = [
+                        addresses,
+                        peer_id,
+                        interface,
+                        name,
+                        user
+                    ]
+
+                    peer_handshake_metric.add_metric(
+                        labels,
+                        latest_handshake
+                    )
+
+                    peer_rx_metric.add_metric(
+                        labels,
+                        transfer_rx
+                    )
+
+                    peer_tx_metric.add_metric(
+                        labels,
+                        transfer_tx
+                    )
+
+                    now = int(time.time())
+
+                    peer_up = 0
+
+                    if latest_handshake > 0:
+                        if (now - latest_handshake) < 180:
+                            peer_up = 1
+
+                    peer_up_metric.add_metric(
+                        labels,
+                        peer_up
+                    )
+
+        except Exception as e:
+            print("WireGuard exporter error:", e)
+
+        yield interface_rx_metric
+        yield interface_tx_metric
+        yield peer_handshake_metric
+        yield peer_rx_metric
+        yield peer_tx_metric
+        yield peer_up_metric
+
+
+if __name__ == '__main__':
+
+    REGISTRY.register(WireGuardCollector())
+
+    start_http_server(PORT)
+
+    print(f'WireGuard exporter listening on :{PORT}')
+
+    while True:
+        time.sleep(30)
+EOF
+
+chmod +x ${INSTALL_DIR}/wg_exporter.py
+
+echo "[4/8] Creating systemd service..."
+
+cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
+[Unit]
+Description=WireGuard Prometheus Exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=root
+Group=root
+
+WorkingDirectory=${INSTALL_DIR}
+
+ExecStart=/usr/bin/python3 ${INSTALL_DIR}/wg_exporter.py
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "[5/8] Reloading systemd..."
+
+systemctl daemon-reload
+
+echo "[6/8] Enabling service..."
+
+systemctl enable ${SERVICE_NAME}
+
+echo "[7/8] Starting service..."
+
+systemctl restart ${SERVICE_NAME}
+
+echo "[8/8] Configuring firewall..."
+
+if command -v ufw >/dev/null 2>&1; then
+    ufw allow ${EXPORTER_PORT}/tcp || true
+fi
+
+echo
+echo "======================================="
+echo "INSTALLATION COMPLETED"
+echo "======================================="
+echo
+
+sleep 2
+
+systemctl --no-pager --full status ${SERVICE_NAME} || true
+
+echo
+echo "======================================="
+echo "METRICS TEST"
+echo "======================================="
+echo
+
+sleep 2
+
+curl -s http://127.0.0.1:${EXPORTER_PORT}/metrics | head -30
+
+echo
+echo "Exporter running on port ${EXPORTER_PORT}"
+echo
+echo "Prometheus target:"
+echo "$(hostname -I | awk '{print $1}'):${EXPORTER_PORT}"
+echo
