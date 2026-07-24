@@ -1,0 +1,3 @@
+curl -fL https://cli-node.optimai.network/optimai_cli_ubuntu -o optimai-cli
+chmod +x optimai-cli
+sudo mv optimai-cli /usr/local/bin/optimai-cli
